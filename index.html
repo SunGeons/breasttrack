@@ -237,76 +237,68 @@ const APP_NAME='BreastTrack', APP_VER='2.0-beta';
    ═══════════════════════════════════════════════════════════ */
 (function initPWA(){
   try{
+    const onHTTP = location.protocol==='https:'||location.hostname==='localhost';
+
     /* ── ไอคอนแอป — วาดด้วย canvas ตอนรันจริง ไม่ต้องแนบไฟล์ภาพแยก ── */
     function makeIcon(size){
       const c=document.createElement('canvas'); c.width=size; c.height=size;
-      const g=c.getContext('2d');
+      const g=c.getContext&&c.getContext('2d'); if(!g) return null;
       g.fillStyle='#0f5c6e'; g.fillRect(0,0,size,size);
-      /* โบว์ชมพูอย่างง่าย เป็นสัญลักษณ์มะเร็งเต้านม */
       g.strokeStyle='#f2a7c3'; g.lineWidth=size*0.09; g.lineCap='round';
       const cx=size/2, top=size*0.24, midY=size*0.52, botY=size*0.82, spread=size*0.17;
       g.beginPath(); g.moveTo(cx,top); g.lineTo(cx-spread,midY); g.lineTo(cx,botY); g.stroke();
       g.beginPath(); g.moveTo(cx,top); g.lineTo(cx+spread,midY); g.lineTo(cx,botY); g.stroke();
       return c.toDataURL('image/png');
     }
-    const icon192=makeIcon(192), icon512=makeIcon(512);
     const addLink=(rel,href,extra)=>{
+      if(!href) return;
       const l=document.createElement('link'); l.rel=rel; l.href=href;
       if(extra) Object.entries(extra).forEach(([k,v])=>l.setAttribute(k,v));
       document.head.appendChild(l);
     };
+    const icon192=makeIcon(192), icon512=makeIcon(512);
     addLink('icon',icon192);
     addLink('apple-touch-icon',icon192);
+    const am=document.createElement('meta');
+    am.name='apple-mobile-web-app-capable'; am.content='yes'; document.head.appendChild(am);
 
-    /* ── manifest — สร้างเป็น Blob URL แนบกับหน้า (ไม่ต้องมีไฟล์ .webmanifest แยก) ── */
+    /* ── manifest ──
+       ใช้ URL แบบเต็ม (absolute) เพราะถ้า manifest ถูกโหลดจาก blob:
+       ค่า start_url/scope แบบ relative จะ resolve ไม่ได้ (เบราว์เซอร์จะเตือนว่า URL is invalid)
+       ถ้ามีไฟล์ manifest.webmanifest วางคู่กันอยู่แล้วจะใช้ไฟล์นั้นแทน (ดีกว่า เพราะ scope ถูกต้องเสมอ) */
+    const base = location.href.replace(/[^/]*$/,'');
     const manifest={
       name:APP_NAME+' — ระบบติดตามผู้ป่วยมะเร็งเต้านม',
       short_name:APP_NAME,
-      start_url:'./',
-      scope:'./',
-      display:'standalone',
-      background_color:'#f5f7f8',
-      theme_color:'#0f5c6e',
-      lang:'th',
-      icons:[{src:icon192,sizes:'192x192',type:'image/png'},
-             {src:icon512,sizes:'512x512',type:'image/png'}]
+      start_url:base, scope:base,
+      display:'standalone', background_color:'#f5f7f8', theme_color:'#0f5c6e', lang:'th',
+      icons:[icon192&&{src:icon192,sizes:'192x192',type:'image/png'},
+             icon512&&{src:icon512,sizes:'512x512',type:'image/png'}].filter(Boolean)
     };
-    const mBlob=new Blob([JSON.stringify(manifest)],{type:'application/manifest+json'});
-    addLink('manifest',URL.createObjectURL(mBlob));
-
-    /* ── Service Worker — ลงทะเบียนผ่าน Blob URL (ใช้ได้แม้ไม่มีไฟล์ .js แยก)
-         ทำงานเฉพาะบน https/localhost เท่านั้น — เบราว์เซอร์ปิดสิทธิ์นี้บน file:// เอง
-         (จึงใช้ไฟล์เดิมแบบเปิดจาก PC โดยตรงได้ตามปกติ ไม่มีผลกระทบ) ── */
-    if('serviceWorker' in navigator && (location.protocol==='https:'||location.hostname==='localhost')){
-      const swSrc=`
-        const CACHE='breasttrack-${APP_VER}';
-        self.addEventListener('install',e=>{ self.skipWaiting(); });
-        self.addEventListener('activate',e=>{
-          e.waitUntil(caches.keys().then(ks=>Promise.all(
-            ks.filter(k=>k!==CACHE).map(k=>caches.delete(k))
-          )).then(()=>self.clients.claim()));
-        });
-        self.addEventListener('fetch',e=>{
-          const req=e.request; if(req.method!=='GET') return;
-          if(req.mode==='navigate'){
-            /* หน้าเว็บหลัก: พยายามโหลดสดก่อน ถ้าไม่มีเน็ตค่อยใช้ฉบับที่เคยเปิดไว้ */
-            e.respondWith(fetch(req).then(res=>{
-              caches.open(CACHE).then(c=>c.put(req,res.clone())); return res;
-            }).catch(()=>caches.match(req).then(r=>r||caches.match('./'))));
-            return;
-          }
-          /* ไฟล์ประกอบ (เช่น xlsx library): ใช้ของที่แคชไว้ก่อน เร็วกว่าและใช้ได้ตอนออฟไลน์ */
-          e.respondWith(caches.match(req).then(cached=>cached||fetch(req).then(res=>{
-            if(res&&res.ok) caches.open(CACHE).then(c=>c.put(req,res.clone()));
-            return res;
-          }).catch(()=>cached)));
-        });
-      `;
-      const swBlob=new Blob([swSrc],{type:'application/javascript'});
-      navigator.serviceWorker.register(URL.createObjectURL(swBlob)).catch(()=>{});
+    if(onHTTP){
+      const useBlobManifest=()=>{
+        try{
+          const b=new Blob([JSON.stringify(manifest)],{type:'application/manifest+json'});
+          addLink('manifest',URL.createObjectURL(b));
+        }catch(e){}
+      };
+      try{
+        fetch(base+'manifest.webmanifest',{method:'HEAD'})
+          .then(r=>{ r.ok ? addLink('manifest',base+'manifest.webmanifest') : useBlobManifest(); })
+          .catch(useBlobManifest);
+      }catch(e){ useBlobManifest(); }
     }
 
-    /* ── ปุ่ม "ติดตั้งแอปนี้" (Android/Desktop Chrome) ── */
+    /* ── Service Worker ──
+       ลงทะเบียนจากไฟล์ sw.js จริง (ไม่ใช่ blob) เพื่อให้ scope ครอบทั้งแอป
+       ทำให้เปิดใช้ได้ตอนเน็ตหลุดในห้องตรวจ — ต้องใช้ https หรือ localhost เท่านั้น */
+    if('serviceWorker' in navigator && onHTTP){
+      navigator.serviceWorker.register(base+'sw.js',{scope:base})
+        .then(reg=>{ reg.addEventListener&&reg.addEventListener('updatefound',()=>{}); })
+        .catch(e=>console.info('SW not registered:',e.message));
+    }
+
+    /* ── ปุ่มติดตั้งแอป ── */
     window.addEventListener('beforeinstallprompt',e=>{
       e.preventDefault(); window.__installPrompt=e;
       const bar=document.getElementById('installBar'); if(bar) bar.style.display='flex';
@@ -314,10 +306,11 @@ const APP_NAME='BreastTrack', APP_VER='2.0-beta';
     window.addEventListener('appinstalled',()=>{ window.__installPrompt=null;
       const bar=document.getElementById('installBar'); if(bar) bar.style.display='none'; });
 
-    /* ── iOS Safari ไม่รองรับ beforeinstallprompt — บอกวิธีติดตั้งเองครั้งเดียว ── */
     const isIOS=/iphone|ipad|ipod/i.test(navigator.userAgent);
-    const standalone=window.navigator.standalone===true||window.matchMedia('(display-mode: standalone)').matches;
-    window.__showIOSInstallHint = isIOS && !standalone && !localStorage.getItem('bt_ios_hint_dismissed');
+    const standalone=window.navigator.standalone===true||
+      (window.matchMedia&&window.matchMedia('(display-mode: standalone)').matches);
+    window.__showIOSInstallHint = isIOS && !standalone && onHTTP &&
+      !localStorage.getItem('bt_ios_hint_dismissed');
   }catch(e){ console.warn('PWA setup skipped:',e.message); }
 })();
 
@@ -689,9 +682,32 @@ const QUAD_TH={UI:'Upper-inner quadrant',LI:'Lower-inner quadrant',LO:'Lower-out
   UO:'Upper-outer quadrant',central:'Central portion / sub-areolar',overlap:'Overlapping sites'};
 
 /* ───────── ④ ที่เก็บข้อมูล ───────── */
+/** รหัสประจำเครื่อง/เบราว์เซอร์นี้ — ใช้แยกว่าใครเป็นคนแก้ (C4) */
+function deviceId(){
+  try{
+    let d=localStorage.getItem('bt_device');
+    if(!d){ d=(navigator.userAgent.match(/(iPhone|iPad|Android|Windows|Mac)/)||['เครื่อง'])[0]
+              +'-'+Math.random().toString(36).slice(2,7);
+      localStorage.setItem('bt_device',d); }
+    return d;
+  }catch(e){ return 'unknown'; }
+}
+function deviceLabel(id){
+  if(!id) return 'ไม่ทราบอุปกรณ์';
+  if(id===deviceId()) return 'เครื่องนี้';
+  return id.replace(/-[a-z0-9]{5}$/,'');
+}
 const store={
   mode:'local',db:null,auth:null,user:null,A:null,F:null,
+  /* ═══ v2.0 (C5) สถานะการเชื่อมต่อและคิวงานที่ยังไม่ขึ้น server ═══ */
+  online:(typeof navigator!=='undefined')?navigator.onLine!==false:true,
+  _pending:new Map(),      /* id -> promise ของ setDoc ที่ยังไม่ ack */
+  _lastRev:{},             /* id -> rev ล่าสุดที่ "เครื่องนี้" เขียน (ใช้แยก echo ของตัวเอง) */
+  _snapUnsub:null,
+  onQueueChange:null,      /* callback ให้ UI วาดสถานะใหม่ */
+
   async init(){
+    this._bindNet();
     if(!FIREBASE_CONFIG.apiKey){this.mode='local';return 'local';}
     try{
       const [appM,authM,fsM]=await Promise.all([
@@ -700,9 +716,63 @@ const store={
         import('https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js')]);
       const app=appM.initializeApp(FIREBASE_CONFIG);
       this.auth=authM.getAuth(app); this.db=fsM.getFirestore(app);
-      try{ await fsM.enableIndexedDbPersistence(this.db); }catch(e){}
-      this.A=authM; this.F=fsM; this.mode='cloud'; return 'cloud';
+      /* เก็บข้อมูลลง IndexedDB เพื่อให้เปิดอ่าน/บันทึกต่อได้แม้เน็ตหลุด */
+      try{ await fsM.enableIndexedDbPersistence(this.db); }
+      catch(e){ console.warn('persistence:',e.code||e.message); }
+      this.A=authM; this.F=fsM; this.mode='cloud';
+      return 'cloud';
     }catch(e){ console.error(e); this.mode='local'; return 'local'; }
+  },
+
+  /* ---- ตรวจจับเน็ตหลุด/กลับมา ---- */
+  _bindNet(){
+    if(this._netBound||typeof window==='undefined') return;
+    this._netBound=true;
+    const upd=(v)=>{
+      if(this.online===v) return;
+      this.online=v;
+      if(v) this.flushQueue();
+      if(this.onQueueChange) this.onQueueChange();
+    };
+    window.addEventListener('online', ()=>upd(true));
+    window.addEventListener('offline',()=>upd(false));
+  },
+
+  /* ---- คิวสำรอง: เก็บสำเนางานที่ยังไม่ ack ไว้ใน localStorage ----
+     Firestore มีคิวของตัวเองใน IndexedDB อยู่แล้ว แต่เก็บซ้ำไว้ที่นี่
+     เพื่อ (1) แสดงให้ผู้ใช้เห็นว่ามีอะไรค้าง (2) กู้คืนได้ถ้า IndexedDB ถูกล้าง */
+  _qGet(){ return this.get('bt_pending',{})||{}; },
+  _qSet(o){ this.set('bt_pending',o); if(this.onQueueChange) this.onQueueChange(); },
+  _qAdd(p){ const q=this._qGet(); q[p.id]={p,at:new Date().toISOString()}; this._qSet(q); },
+  _qDel(id){ const q=this._qGet(); if(q[id]){ delete q[id]; this._qSet(q); } },
+  pendingCount(){ return Object.keys(this._qGet()).length; },
+  pendingList(){ return Object.values(this._qGet()); },
+
+  /** ส่งงานที่ค้างในคิวขึ้น server อีกครั้ง (เรียกตอนเน็ตกลับมา / ตอนเปิดแอป) */
+  async flushQueue(){
+    if(this.mode!=='cloud') return {sent:0,failed:0};
+    const q=this._qGet(), ids=Object.keys(q);
+    let sent=0,failed=0;
+    for(const id of ids){
+      try{
+        const p=q[id].p; const {id:_i,...d}=p;
+        await this.F.setDoc(this.F.doc(this.db,'patients',id),d);
+        this._qDel(id); sent++;
+      }catch(e){ console.warn('flush failed',id,e.message); failed++; }
+    }
+    return {sent,failed};
+  },
+
+  /** รอจนงานทั้งหมดขึ้น server จริง (ใช้ตอนผู้ใช้กดออก/ปิดแอป) */
+  async waitForSync(ms=8000){
+    if(this.mode!=='cloud') return true;
+    try{
+      await Promise.race([
+        this.F.waitForPendingWrites(this.db),
+        new Promise(r=>setTimeout(r,ms))
+      ]);
+    }catch(e){}
+    return this.pendingCount()===0;
   },
   onAuth(cb){
     if(this.mode==='cloud') this.A.onAuthStateChanged(this.auth,u=>{this.user=u;cb(u);});
@@ -723,25 +793,76 @@ const store={
   },
   async save(p){
     p.updatedAt=new Date().toISOString(); p.updatedBy=this.user?.email||''; p.ver=APP_VER;
+    p.rev=(+p.rev||0)+1;                  /* C4 — ตัวนับรุ่น ใช้ตรวจการแก้ชนกัน */
+    p.updatedFrom=deviceId();             /* C4 — เครื่องไหนเป็นคนแก้ */
     if(!p.createdAt) p.createdAt=p.updatedAt;
     /* ไม่เก็บชื่อผู้ป่วยลงฐานข้อมูล เว้นแต่เปิดโหมดเก็บชื่อไว้ */
     if(this.get('bt_storeNames',false)!==true) p.name='';
-    if(this.mode==='cloud'){ const {id,...d}=p; await this.F.setDoc(this.F.doc(this.db,'patients',id),d); }
-    else{
-      const all=this.get('bt_patients',[])||[];
-      const i=all.findIndex(x=>x.id===p.id);
-      if(i>=0) all[i]=p; else all.push(p);
-      this.set('bt_patients',all);
+
+    if(this.mode==='cloud'){
+      const {id,...d}=p;
+      this._lastRev[id]=p.rev;
+      /* เก็บสำเนาเข้าคิวก่อนเขียน — ถ้าเน็ตหลุดกลางทางยังกู้ได้ */
+      this._qAdd(p);
+      const pr=this.F.setDoc(this.F.doc(this.db,'patients',id),d)
+        .then(()=>{ this._qDel(id); this._pending.delete(id); })
+        .catch(e=>{ this._pending.delete(id); console.warn('write not acked:',e.message); });
+      this._pending.set(id,pr);
+      /* ⚠️ สำคัญ: ไม่ await จนกว่า server จะตอบ
+         เพราะตอนเน็ตหลุด Firestore จะเขียนลง cache ในเครื่องทันทีแต่ promise จะค้างไปเรื่อยๆ
+         (ก่อนหน้านี้ทำให้สถานะ "กำลังบันทึก…" ค้างถาวรและ dirty ไม่เคยถูกล้าง) */
+      await Promise.race([pr, new Promise(r=>setTimeout(r,600))]);
+      return;
     }
+    const all=this.get('bt_patients',[])||[];
+    const i=all.findIndex(x=>x.id===p.id);
+    if(i>=0) all[i]=p; else all.push(p);
+    this.set('bt_patients',all);
+  },
+
+  /* ═══ C4 — ฟังการเปลี่ยนแปลงจากอุปกรณ์อื่นแบบสด ═══ */
+  watch(onChange){
+    if(this.mode!=='cloud'||!this.F) return ()=>{};
+    try{
+      this._snapUnsub=this.F.onSnapshot(
+        this.F.collection(this.db,'patients'),
+        {includeMetadataChanges:false},
+        snap=>{
+          const out=[];
+          snap.docChanges().forEach(c=>{
+            const data=c.doc.data(), id=c.doc.id;
+            /* ข้าม echo ของงานที่เครื่องนี้เพิ่งเขียนเอง */
+            const mine=this._lastRev[id]!==undefined && (+data.rev||0)<=this._lastRev[id];
+            out.push({type:c.type,id,data,mine,fromThisDevice:data.updatedFrom===deviceId()});
+          });
+          if(out.length&&onChange) onChange(out,{fromCache:snap.metadata.fromCache});
+        },
+        err=>console.warn('watch error:',err.message)
+      );
+    }catch(e){ console.warn('watch unavailable:',e.message); }
+    return ()=>{ if(this._snapUnsub){ this._snapUnsub(); this._snapUnsub=null; } };
+  },
+
+  /** อ่านเอกสารเดียวจาก server ตรงๆ (ใช้ตอนต้องเทียบข้อมูลชนกัน) */
+  async getOne(id){
+    if(this.mode!=='cloud') return (this.get('bt_patients',[])||[]).find(x=>x.id===id)||null;
+    try{
+      const d=await this.F.getDoc(this.F.doc(this.db,'patients',id));
+      return d.exists()?migrate({...d.data(),id:d.id}):null;
+    }catch(e){ return null; }
   },
   async remove(id){
     if(this.mode==='cloud') await this.F.deleteDoc(this.F.doc(this.db,'patients',id));
     else this.set('bt_patients',(this.get('bt_patients',[])||[]).filter(x=>x.id!==id));
   },
   async audit(action,detail,hn){
-    const r={id:uid(),at:new Date().toISOString(),by:this.user?.email||'-',action,detail:detail||'',hn:hn||''};
-    if(this.mode==='cloud'){ try{ await this.F.setDoc(this.F.doc(this.db,'audit',r.id),r);}catch(e){} }
-    else{ const a=this.get('bt_audit',[])||[]; a.unshift(r); this.set('bt_audit',a.slice(0,500)); }
+    const r={id:uid(),at:new Date().toISOString(),by:this.user?.email||'-',action,detail:detail||'',hn:hn||'',dev:deviceId()};
+    /* เก็บสำเนาไว้ในเครื่องเสมอ เพื่อให้ยังดูประวัติได้ตอนเน็ตหลุด */
+    const a=this.get('bt_audit',[])||[]; a.unshift(r); this.set('bt_audit',a.slice(0,500));
+    if(this.mode==='cloud'){
+      /* ไม่ await — audit ไม่ควรทำให้การบันทึกผู้ป่วยช้าหรือค้างตอนออฟไลน์ */
+      try{ this.F.setDoc(this.F.doc(this.db,'audit',r.id),r).catch(()=>{}); }catch(e){}
+    }
   },
   async auditList(){
     if(this.mode==='cloud'){
@@ -772,7 +893,7 @@ function patLabel(p){
 /* ───────── ⑤ สถานะแอป ───────── */
 const S={ view:'dash', patients:[], current:null, ptab:'general',
           editVisit:null, q:'', fStatus:'', fAlert:'',
-          dirty:false, savedAt:null, saving:false, showAllBlocks:false };
+          dirty:false, savedAt:null, saving:false, showAllBlocks:false, conflict:null };
 
 /* ───────── ⑥ โครงข้อมูล ───────── */
 function blankPatient(){
@@ -2475,8 +2596,50 @@ function saveStateText(){
   if(!S.current) return '';
   if(S.saving) return 'กำลังบันทึก…';
   if(S.dirty) return 'ยังไม่ได้บันทึก';
-  if(S.savedAt) return 'บันทึกแล้ว '+S.savedAt.toLocaleTimeString('th-TH',{hour:'2-digit',minute:'2-digit'});
+  if(S.savedAt){
+    const t=S.savedAt.toLocaleTimeString('th-TH',{hour:'2-digit',minute:'2-digit'});
+    /* C5 — แยกให้ชัดระหว่าง "เก็บในเครื่องแล้ว" กับ "ขึ้น server แล้ว" */
+    if(store.mode==='cloud'&&store.pendingCount()>0) return 'เก็บในเครื่องแล้ว '+t+' · รอส่งขึ้นระบบ';
+    return 'บันทึกแล้ว '+t;
+  }
   return '';
+}
+/** v2.0 (C5) — ป้ายสถานะเน็ต/คิวงานค้าง ข้างชื่อผู้ใช้ */
+function paintNetState(){
+  const el2=document.getElementById('netState'); if(!el2) return;
+  if(store.mode!=='cloud'){ el2.innerHTML=''; return; }
+  const n=store.pendingCount();
+  if(!store.online){
+    el2.innerHTML=`<span class="badge warn" title="เน็ตหลุด — ข้อมูลถูกเก็บในเครื่องไว้ก่อน">
+      ออฟไลน์${n?` · ค้าง ${n}`:''}</span>`;
+  }else if(n){
+    el2.innerHTML=`<span class="badge b" title="กำลังส่งข้อมูลขึ้นระบบ">กำลังซิงก์ ${n}</span>`;
+  }else{
+    el2.innerHTML='';
+  }
+  el2.onclick=()=>{ if(store.pendingCount()||!store.online) showSyncPanel(); };
+  el2.style.cursor=(n||!store.online)?'pointer':'';
+}
+/** กล่องรายละเอียดคิวงานที่ยังไม่ขึ้น server */
+function showSyncPanel(){
+  const q=store.pendingList();
+  const lines=q.map(x=>{
+    const p=x.p;
+    return `• ${esc(patLabel(p))} — แก้เมื่อ ${new Date(x.at).toLocaleString('th-TH')}`;
+  }).join('\n');
+  const msg = !store.online
+    ? `ตอนนี้ไม่มีอินเทอร์เน็ต\n\nข้อมูลที่แก้ถูกเก็บไว้ในเครื่องเรียบร้อยแล้ว `+
+      `และจะส่งขึ้นระบบให้อัตโนมัติเมื่อเน็ตกลับมา — ทำงานต่อได้ตามปกติ`+
+      (q.length?`\n\nรายการที่รอส่ง ${q.length} รายการ:\n${lines}`:'')
+    : q.length
+      ? `กำลังส่งข้อมูลขึ้นระบบ ${q.length} รายการ:\n${lines}\n\nกด OK เพื่อลองส่งใหม่ทันที`
+      : 'ข้อมูลทั้งหมดขึ้นระบบเรียบร้อยแล้ว';
+  if(confirm(msg)&&store.online&&q.length){
+    store.flushQueue().then(r=>{
+      toast(r.failed?`ส่งสำเร็จ ${r.sent} · ยังค้าง ${r.failed}`:`ส่งข้อมูลขึ้นระบบครบแล้ว (${r.sent})`);
+      paintNetState();
+    });
+  }
 }
 function paintSaveState(){
   const t=saveStateText();
@@ -2484,9 +2647,11 @@ function paintSaveState(){
     e.textContent=t;
     e.className=e.classList.contains('st')?'st':(S.dirty?'dirty':(S.savedAt?'saved':''));
   });
+  paintNetState();
 }
 window.addEventListener('beforeunload',e=>{
-  if(S.dirty){ e.preventDefault(); e.returnValue=''; return ''; }
+  /* C5 — กันปิดแอปทั้งที่ยังมีข้อมูลไม่ได้บันทึก หรือบันทึกแล้วแต่ยังไม่ขึ้น server */
+  if(S.dirty||store.pendingCount()>0){ e.preventDefault(); e.returnValue=''; return ''; }
 });
 
 /* ───────── ⑪ UI helper ───────── */
@@ -2748,6 +2913,7 @@ function renderShell(){
     <div class="userbox">
       <span id="saveState"></span>
       <span class="email">${esc(store.user?.email||'')}</span>
+      <span id="netState"></span>
       ${store.mode==='local'?'<span class="badge warn">ทดลอง</span>':'<span class="badge ok">Firebase</span>'}
       <button class="btn sm" id="bOut">ออก</button>
     </div>
@@ -2782,6 +2948,16 @@ function renderShell(){
   }
   $('#bOut').onclick=async()=>{
     if(S.dirty&&!confirm('ยังมีข้อมูลที่ยังไม่ได้บันทึก ต้องการออกจากระบบเลยหรือไม่?')) return;
+    /* C5 — ถ้ายังมีงานค้างส่ง ให้รอซิงก์ก่อน ไม่งั้นข้อมูลอาจหายเมื่อล้าง session */
+    if(store.pendingCount()){
+      if(!store.online){
+        if(!confirm(`ยังมีข้อมูล ${store.pendingCount()} รายการที่ยังไม่ได้ส่งขึ้นระบบ และตอนนี้ไม่มีเน็ต\n\n`+
+                    `ถ้าออกตอนนี้ข้อมูลจะยังอยู่ในเครื่อง แต่แนะนำให้รอเน็ตกลับมาก่อน\n\nยืนยันออกจากระบบ?`)) return;
+      }else{
+        toast('กำลังส่งข้อมูลที่ค้างขึ้นระบบก่อนออก…');
+        await store.flushQueue(); await store.waitForSync(6000);
+      }
+    }
     store.signOut();
   };
   const tn=$('#topnav'), bn=$('#botnav');
@@ -3115,6 +3291,9 @@ function viewPatient(){
     go.onclick=()=>openPatient(dup[0].id); w.appendChild(el('div','',''));w.appendChild(go);
     root.appendChild(w);
   }
+
+  const cb2=conflictBar(p);
+  if(cb2) root.appendChild(cb2);
 
   const tabs=el('div','tabs no-print');
   const tdN=todoCount(p);
@@ -5713,6 +5892,114 @@ function exportXLSX(){
   markBackedUp();
 }
 
+/* ═══════════════════════════════════════════════════════════
+   v2.0 (C4) · ซิงก์สดระหว่างอุปกรณ์ + จัดการการแก้ชนกัน
+
+   หลักการ:
+   - เคสที่ "ไม่ได้เปิดอยู่" → อัปเดตเงียบๆ ให้ตรงกับ server
+   - เคสที่ "กำลังเปิดดู/แก้อยู่" และมีการแก้จากอีกเครื่อง → ไม่เขียนทับทันที
+     แต่ขึ้นแถบให้เลือกเองว่าจะเอาของใคร (กันข้อมูลหายแบบเงียบๆ)
+   ═══════════════════════════════════════════════════════════ */
+function startLiveSync(){
+  if(store.mode!=='cloud') return;
+  store.onQueueChange=()=>paintNetState();
+  store.watch((changes)=>{
+    let listChanged=false;
+    changes.forEach(ch=>{
+      if(ch.type==='removed'){
+        if(S.current&&S.current.id===ch.id){
+          S.conflict={kind:'removed',id:ch.id};
+        }else{
+          S.patients=S.patients.filter(x=>x.id!==ch.id); listChanged=true;
+        }
+        return;
+      }
+      const incoming=migrate({...ch.data,id:ch.id});
+      const idx=S.patients.findIndex(x=>x.id===ch.id);
+      const editing=S.current&&S.current.id===ch.id;
+
+      /* งานที่เครื่องนี้เพิ่งเขียนเอง — ไม่ต้องทำอะไร */
+      if(ch.mine||ch.fromThisDevice){
+        if(!editing&&idx>=0){ S.patients[idx]=incoming; listChanged=true; }
+        else if(idx<0){ S.patients.push(incoming); listChanged=true; }
+        return;
+      }
+
+      if(editing){
+        /* มีคนแก้เคสที่เรากำลังเปิดอยู่จากอีกเครื่อง */
+        if(S.dirty||store.pendingCount()>0){
+          S.conflict={kind:'both',id:ch.id,remote:incoming};   /* ต่างฝ่ายต่างแก้ */
+        }else{
+          /* เราไม่ได้แก้อะไรค้างไว้ → รับของใหม่มาแสดงได้เลย แต่บอกให้รู้ */
+          S.current=incoming;
+          if(idx>=0) S.patients[idx]=incoming;
+          toast('ข้อมูลเคสนี้ถูกอัปเดตจาก '+deviceLabel(incoming.updatedFrom));
+          renderMain();
+        }
+        return;
+      }
+      if(idx>=0) S.patients[idx]=incoming; else S.patients.push(incoming);
+      listChanged=true;
+    });
+    if(listChanged&&(S.view==='dash'||S.view==='patients'||S.view==='stats')) renderMain();
+    if(S.conflict) renderMain();
+    paintNetState();
+  });
+}
+
+/** แถบแจ้งเตือนเมื่อข้อมูลชนกัน — ให้ผู้ใช้เลือกเอง ไม่เขียนทับให้เอง */
+function conflictBar(p){
+  const c=S.conflict;
+  if(!c||c.id!==p.id) return null;
+  const box=el('div','alert dg'); box.style.marginBottom='14px';
+
+  if(c.kind==='removed'){
+    box.innerHTML=`<strong>เคสนี้ถูกลบจากอีกอุปกรณ์</strong><br>
+      <span style="font-size:12.5px">ข้อมูลที่เปิดค้างอยู่ยังอยู่ในหน้าจอนี้เท่านั้น</span>`;
+    const row=el('div','btnrow'); row.style.marginTop='9px';
+    const keep=el('button','btn sm primary'); keep.textContent='บันทึกกลับขึ้นระบบ';
+    keep.onclick=async()=>{ S.conflict=null; await saveNow(); renderMain(); };
+    const drop=el('button','btn sm'); drop.textContent='ทิ้งแล้วกลับไปรายชื่อ';
+    drop.onclick=()=>{ S.conflict=null; S.dirty=false; backToList(); };
+    row.appendChild(keep); row.appendChild(drop); box.appendChild(row);
+    return box;
+  }
+
+  const r=c.remote;
+  box.innerHTML=`<strong>ข้อมูลเคสนี้ถูกแก้จาก ${esc(deviceLabel(r.updatedFrom))} ขณะที่คุณกำลังแก้อยู่</strong><br>
+    <span style="font-size:12.5px">
+      อีกเครื่องแก้เมื่อ ${r.updatedAt?new Date(r.updatedAt).toLocaleString('th-TH'):'—'}
+      (รุ่นที่ ${esc(String(r.rev||'?'))}) · เครื่องนี้รุ่นที่ ${esc(String(p.rev||'?'))}<br>
+      ระบบยังไม่เขียนทับข้อมูลของคุณ — เลือกว่าจะเก็บฉบับไหน
+    </span>`;
+  const row=el('div','btnrow'); row.style.marginTop='10px';
+
+  const mine=el('button','btn sm primary'); mine.textContent='ใช้ของเครื่องนี้ (ทับของอีกเครื่อง)';
+  mine.onclick=async()=>{ S.conflict=null; S.dirty=true; await saveNow(); toast('บันทึกฉบับของเครื่องนี้แล้ว'); renderMain(); };
+
+  const theirs=el('button','btn sm'); theirs.textContent='ใช้ของอีกเครื่อง (ทิ้งที่แก้ไว้)';
+  theirs.onclick=()=>{
+    if(!confirm('ทิ้งสิ่งที่แก้ในเครื่องนี้ แล้วใช้ข้อมูลจากอีกเครื่องแทน?')) return;
+    const i=S.patients.findIndex(x=>x.id===r.id);
+    if(i>=0) S.patients[i]=r;
+    S.current=r; S.conflict=null; S.dirty=false; S.editVisit=null;
+    toast('ใช้ข้อมูลจากอีกเครื่องแล้ว'); renderMain();
+  };
+
+  const later=el('button','btn sm'); later.textContent='ตัดสินใจทีหลัง';
+  later.onclick=()=>{ S.conflict=null; renderMain(); };
+
+  const dl2=el('button','btn sm'); dl2.textContent='ดาวน์โหลดทั้งสองฉบับเก็บไว้';
+  dl2.onclick=()=>{
+    dl(new Blob([JSON.stringify({thisDevice:p,otherDevice:r},null,2)],{type:'application/json'}),
+       `conflict-${p.hn||p.id}-${todayISO()}.json`);
+  };
+
+  row.appendChild(mine); row.appendChild(theirs); row.appendChild(dl2); row.appendChild(later);
+  box.appendChild(row);
+  return box;
+}
+
 /* ───────── ⑳ เริ่มระบบ ───────── */
 async function boot(){
   $('#app').innerHTML='<div class="login"><div class="hint">กำลังเริ่มระบบ…</div></div>';
@@ -5730,6 +6017,19 @@ async function boot(){
       return;
     }
     render();
+    /* C5 — ส่งงานที่ค้างจากรอบก่อน (เช่นปิดแอปตอนเน็ตหลุด) ขึ้นระบบก่อน */
+    if(store.pendingCount()){
+      const n=store.pendingCount();
+      store.flushQueue().then(r=>{
+        if(r.sent) toast(`ส่งข้อมูลที่ค้างไว้ขึ้นระบบแล้ว ${r.sent} รายการ`);
+        if(r.failed) toast(`ยังส่งไม่สำเร็จ ${r.failed} รายการ — จะลองใหม่เมื่อเน็ตพร้อม`,'err');
+        paintNetState();
+      });
+      console.info('pending on boot:',n);
+    }
+    /* C4 — เปิดการซิงก์สดระหว่างอุปกรณ์ */
+    startLiveSync();
+    paintNetState();
   });
 }
 boot();
